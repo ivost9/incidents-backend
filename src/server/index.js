@@ -4,7 +4,7 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const sqlite3 = require("sqlite3").verbose();
+const Database = require("better-sqlite3");
 
 const app = express();
 app.use(
@@ -20,20 +20,22 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:5000";
 const PORT = process.env.PORT || 5000;
 
-// Setup SQLite база
-const db = new sqlite3.Database("./incidents.db");
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS incidents (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      lat REAL,
-      lng REAL,
-      description TEXT,
-      mediaUrl TEXT,
-      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-});
+// Setup SQLite база с better-sqlite3
+const db = new Database("./incidents.db");
+
+// Създаваме таблицата ако не съществува
+db.prepare(
+  `
+  CREATE TABLE IF NOT EXISTS incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lat REAL,
+    lng REAL,
+    description TEXT,
+    mediaUrl TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`
+).run();
 
 // Multer за файлове
 const storage = multer.diskStorage({
@@ -50,35 +52,36 @@ const upload = multer({ storage });
 
 // GET всички инциденти
 app.get("/incidents", (req, res) => {
-  db.all("SELECT * FROM incidents ORDER BY timestamp DESC", (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const rows = db
+      .prepare("SELECT * FROM incidents ORDER BY timestamp DESC")
+      .all();
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST нов инцидент
 app.post("/incidents", upload.single("media"), (req, res) => {
-  const { lat, lng, description } = req.body;
-  const mediaUrl = req.file
-    ? `${BACKEND_URL}/uploads/${req.file.filename}`
-    : null;
+  try {
+    const { lat, lng, description } = req.body;
+    const mediaUrl = req.file
+      ? `${BACKEND_URL}/uploads/${req.file.filename}`
+      : null;
 
-  const stmt = db.prepare(
-    "INSERT INTO incidents (lat, lng, description, mediaUrl) VALUES (?, ?, ?, ?)"
-  );
-  stmt.run(lat, lng, description, mediaUrl, function (err) {
-    if (err) return res.status(500).json({ error: err.message });
-
-    db.get(
-      "SELECT * FROM incidents WHERE id = ?",
-      [this.lastID],
-      (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(row);
-      }
+    const stmt = db.prepare(
+      "INSERT INTO incidents (lat, lng, description, mediaUrl) VALUES (?, ?, ?, ?)"
     );
-  });
-  stmt.finalize();
+    const result = stmt.run(lat, lng, description, mediaUrl);
+
+    const row = db
+      .prepare("SELECT * FROM incidents WHERE id = ?")
+      .get(result.lastInsertRowid);
+    res.json(row);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Стартиране на сървъра
